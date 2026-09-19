@@ -94,7 +94,7 @@ _ARXIV_OLD = re.compile(
 # A bare DOI is hard to regex generally, but the common citation forms start
 # with 10.<prefix>/<suffix> and the suffix almost never contains whitespace
 # or closing braces (BibTeX fields, JSON blobs).
-_BARE_DOI = re.compile(r"\b(10\.\d{4,9}/[^\s\"'<>|,;)\]}]+)", re.IGNORECASE)
+_BARE_DOI = re.compile(r"\b(10\.\d{4,9}/[^\s\"'<>|,;}\]]+)", re.IGNORECASE)
 
 _PUBMED_ID = re.compile(r"pmid[:\s]*([0-9]{1,9})", re.IGNORECASE)
 
@@ -112,7 +112,11 @@ def normalize_doi(raw: Optional[str]) -> Optional[str]:
     match = _BARE_DOI.search(text)
     if not match:
         return None
-    doi = match.group(1).rstrip(".")
+    doi = match.group(1).rstrip(".,;:")
+    # A DOI may legitimately contain balanced parentheses, as in many
+    # Elsevier SICI-era identifiers. Remove only an unmatched closing wrapper.
+    while doi.endswith(")") and doi.count(")") > doi.count("("):
+        doi = doi[:-1]
     return doi.lower()
 
 
@@ -193,7 +197,10 @@ def title_similarity(a: Optional[str], b: Optional[str]) -> float:
     if tokens_a <= tokens_b or tokens_b <= tokens_a:
         smaller = min(len(tokens_a), len(tokens_b))
         larger = max(len(tokens_a), len(tokens_b))
-        return max(dice, 0.85 + 0.15 * smaller / larger)
+        containment = smaller / larger
+        if containment < 0.60:
+            return min(dice, 0.84)
+        return max(dice, 0.85 + 0.15 * containment)
     return dice
 
 

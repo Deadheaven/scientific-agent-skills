@@ -61,6 +61,16 @@ class IdentifierNormalisationTests(unittest.TestCase):
         self.assertIsNone(_common.normalize_doi("no identifier here"))
         self.assertIsNone(_common.normalize_doi(None))
 
+    def test_parenthesized_doi_suffix_is_preserved(self) -> None:
+        self.assertEqual(
+            _common.normalize_doi("10.1016/S0140-6736(97)11096-0"),
+            "10.1016/s0140-6736(97)11096-0",
+        )
+        self.assertEqual(
+            _common.normalize_doi("(10.1016/S0140-6736(97)11096-0)."),
+            "10.1016/s0140-6736(97)11096-0",
+        )
+
     def test_arxiv_ids_new_and_old(self) -> None:
         self.assertEqual(_common.extract_arxiv_id("arXiv:1706.03762"), "1706.03762")
         self.assertEqual(
@@ -110,6 +120,13 @@ class TitleMatchingTests(unittest.TestCase):
     def test_empty_titles_never_match(self) -> None:
         self.assertEqual(_common.title_similarity("", "anything"), 0.0)
         self.assertEqual(_common.title_similarity(None, None), 0.0)
+
+    def test_short_containment_does_not_clear_match_threshold(self) -> None:
+        score = _common.title_similarity(
+            "Deep learning for protein structure prediction",
+            "Deep learning for protein structure prediction with AlphaFold and templates in modern biology research",
+        )
+        self.assertLess(score, 0.85)
 
 
 class MetadataComparisonTests(unittest.TestCase):
@@ -245,6 +262,75 @@ class VerdictLogicTests(unittest.TestCase):
     def test_entry_without_identifier_or_title_is_skipped(self) -> None:
         result = verify_references.resolve_reference({"key": "9", "type": "text"})
         self.assertEqual(result["verdict"], _common.SKIPPED)
+
+    def test_dead_doi_is_retained_when_title_fallback_resolves(self) -> None:
+        original_fetch = verify_references._fetch_by_doi
+        original_search = verify_references._best_search_match
+        original_pause = verify_references.REQUEST_PAUSE
+        try:
+            verify_references._fetch_by_doi = lambda doi: None
+            verify_references._best_search_match = lambda title: {
+                "title": title,
+                "year": 2021,
+                "author": [{"family": "Roe"}],
+                "type": "journal-article",
+            }
+            verify_references.REQUEST_PAUSE = 0
+            result = verify_references.resolve_reference({
+                "key": "1", "doi": "10.1080/24733938.2025.1234567",
+                "title": "A Real Scientific Paper", "year": "2021", "authors": "Roe, J.",
+            })
+        finally:
+            verify_references._fetch_by_doi = original_fetch
+            verify_references._best_search_match = original_search
+            verify_references.REQUEST_PAUSE = original_pause
+        self.assertEqual(result["verdict"], _common.METADATA_MISMATCH)
+        self.assertTrue(any("DOI not found" in reason for reason in result["mismatch_reasons"]))
+
+    def test_search_candidates_drop_components_and_keep_retraction_metadata(self) -> None:
+        original_fetch = verify_references.fetch_json
+        try:
+            verify_references.fetch_json = lambda *args, **kwargs: {
+                "message": {
+                    "items": [
+                        {"title": ["A Supplement"], "type": "component"},
+                        {"title": ["Metadata Free"], "type": "journal-article"},
+                        {
+                            "title": ["A Retracted Paper"],
+                            "type": "journal-article",
+                            "author": [{"family": "Roe"}],
+                            "issued": {"date-parts": [[2021]]},
+                            "updated-by": [{"type": "retraction", "DOI": "10.5555/notice"}],
+                        },
+                    ]
+                }
+            }
+            records = verify_references._search_crossref("A Retracted Paper")
+        finally:
+            verify_references.fetch_json = original_fetch
+        assert len(records) == 1
+        assert records[0]["_retraction"] == "updated-by: retraction (10.5555/notice)"
+
+    def test_search_retraction_is_preserved(self) -> None:
+        original_search = verify_references._best_search_match
+        original_pause = verify_references.REQUEST_PAUSE
+        try:
+            verify_references._best_search_match = lambda title: {
+                "title": title,
+                "year": 2021,
+                "author": [{"family": "Roe"}],
+                "type": "journal-article",
+                "_retraction": "updated-by: retraction (10.5555/notice)",
+            }
+            verify_references.REQUEST_PAUSE = 0
+            result = verify_references.resolve_reference({
+                "key": "1", "title": "A Real Scientific Paper", "year": "2021", "authors": "Roe, J.",
+            })
+        finally:
+            verify_references._best_search_match = original_search
+            verify_references.REQUEST_PAUSE = original_pause
+        self.assertEqual(result["verdict"], _common.RETRACTED)
+        self.assertIn("retraction", result["retraction_detail"])
 
     def test_taxonomy_constants_are_shared(self) -> None:
         # The report renderer and the verifier must agree on verdict strings.

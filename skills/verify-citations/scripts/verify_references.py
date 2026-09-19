@@ -108,14 +108,26 @@ def _search_crossref(title: str) -> List[Dict]:
     params = {
         "query.bibliographic": title,
         "rows": SEARCH_ROWS,
-        "select": "title,author,issued,container-title,DOI,type",
+        "select": "title,author,issued,container-title,DOI,type,update-to,updated-by",
     }
     email = contact_email()
     if email:
         params["mailto"] = email
     payload = fetch_json(CROSSREF_SEARCH, params=params)
     items = payload.get("message", {}).get("items", [])
-    return [_crossref_record(item) for item in items]
+    records = []
+    for item in items:
+        record = _crossref_record(item)
+        # Components and metadata-free records are not safe evidence for a
+        # title-only verification: they can make fabricated references look
+        # verified without an author or publication year to compare.
+        if record.get("type") == "component":
+            continue
+        if not record.get("author") and not record.get("year"):
+            continue
+        record["_retraction"] = _retraction_reason(item)
+        records.append(record)
+    return records
 
 
 def _fetch_arxiv(arxiv_id: str) -> Optional[Dict]:
@@ -210,9 +222,11 @@ def resolve_reference(reference: Dict) -> Dict:
 
     resolved: Optional[Dict] = None
     matched_via = None
+    doi_not_found = False
     try:
         if doi:
             resolved = _fetch_by_doi(doi)
+            doi_not_found = resolved is None
             matched_via = f"crossref:doi/{doi}" if resolved else None
         if resolved is None and arxiv_id:
             resolved = _fetch_arxiv(arxiv_id)
@@ -232,7 +246,11 @@ def resolve_reference(reference: Dict) -> Dict:
 
     if resolved is None:
         result["verdict"] = NOT_FOUND
-        result["detail"] = "no record found in any queried provider"
+        result["detail"] = (
+            f"DOI not found: {doi}; no record found in any queried provider"
+            if doi_not_found
+            else "no record found in any queried provider"
+        )
         return result
 
     result["matched_via"] = matched_via
@@ -249,6 +267,8 @@ def resolve_reference(reference: Dict) -> Dict:
         {"title": title, "year": reference.get("year"), "authors": reference.get("authors")},
         resolved,
     )
+    if doi_not_found:
+        mismatches.append(f"DOI not found: {doi}")
     if retraction:
         result["verdict"] = RETRACTED
         result["retraction_detail"] = retraction
