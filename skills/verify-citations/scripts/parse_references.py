@@ -94,19 +94,62 @@ def parse_bibtex(text: str) -> List[Dict]:
             "type": kind,
             "raw": body.strip(),
         }
-        fields: Dict[str, str] = {}
-        for field_match in re.finditer(
-            r"(\w+)\s*=\s*(\{.*?\}|\".*?\")\s*(?:,|$)", body, re.DOTALL
-        ):
-            name = field_match.group(1).lower()
-            value = field_match.group(2)
-            if value.startswith("{") or value.startswith('"'):
-                value = value[1:-1]
-            fields[name] = re.sub(r"\s+", " ", value).strip()
+        fields = _parse_bibtex_fields(body)
         entry["fields"] = fields
         entries.append(_entry_from_fields(entry))
         index = cursor
     return entries
+
+
+def _parse_bibtex_fields(body: str) -> Dict[str, str]:
+    """Parse BibTeX fields while respecting nested braces and quoted values."""
+    fields: Dict[str, str] = {}
+    key_match = re.match(r"\s*[^,\s]+\s*,", body)
+    index = key_match.end() if key_match else 0
+    while index < len(body):
+        while index < len(body) and (body[index].isspace() or body[index] == ","):
+            index += 1
+        field_match = re.match(r"([A-Za-z][\w-]*)\s*=", body[index:])
+        if not field_match:
+            break
+        name = field_match.group(1).lower()
+        index += field_match.end()
+        while index < len(body) and body[index].isspace():
+            index += 1
+        if index >= len(body):
+            fields[name] = ""
+            break
+        start = index
+        if body[index] == "{":
+            depth = 1
+            index += 1
+            while index < len(body) and depth:
+                if body[index] == "{":
+                    depth += 1
+                elif body[index] == "}":
+                    depth -= 1
+                index += 1
+            value = body[start + 1:index - 1] if depth == 0 else body[start + 1:index]
+        elif body[index] == '"':
+            index += 1
+            while index < len(body):
+                if body[index] == '"' and body[index - 1] != "\\":
+                    index += 1
+                    break
+                index += 1
+            value = (
+                body[start + 1:index - 1]
+                if index <= len(body) and body[index - 1:index] == '"'
+                else body[start + 1:index]
+            )
+        else:
+            while index < len(body) and body[index] != ",":
+                index += 1
+            value = body[start:index].strip()
+        fields[name] = re.sub(r"\s+", " ", value).strip()
+        while index < len(body) and (body[index].isspace() or body[index] == ","):
+            index += 1
+    return fields
 
 
 # --------------------------------------------------------------------------
@@ -151,8 +194,10 @@ def _entry_from_text(raw: str, position: int) -> Dict:
     if year_match:
         year = year_match.group(1)
         before_year = text[:year_match.start()].strip()
-        # Author block conventionally sits before the year, before the title.
-        authors = re.split(r"[.:]|\s{2,}", before_year)[0].strip(" .,")
+        # Preserve the whole pre-year author block. Splitting on periods here
+        # turns initials-first styles such as "J. Jumper" into a lone "J";
+        # _first_surname applies conservative format-aware comparison later.
+        authors = before_year.strip(" .,")
     return {
         "key": str(position),
         "type": "text",

@@ -54,7 +54,7 @@ from _common import (  # noqa: E402
 
 CROSSREF_WORKS = "https://api.crossref.org/works"
 CROSSREF_SEARCH = "https://api.crossref.org/works"
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 PUBMED_ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 
 MATCH_THRESHOLD = 0.85

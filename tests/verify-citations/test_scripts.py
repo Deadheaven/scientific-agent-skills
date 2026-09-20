@@ -85,6 +85,16 @@ class IdentifierNormalisationTests(unittest.TestCase):
         self.assertEqual(_common.extract_pmid("PMID: 35688944"), "35688944")
         self.assertIsNone(_common.extract_pmid("no pmid"))
 
+    def test_parenthesized_doi_is_collected_by_retraction_sweep(self) -> None:
+        text = "A citation (10.1016/S0140-6736(97)11096-0)."
+        path = FIXTURES.parent / "parenthesized-doi.txt"
+        path.write_text(text, encoding="utf-8")
+        self.addCleanup(path.unlink)
+        self.assertEqual(
+            check_retractions.collect_dois([str(path)], []),
+            ["10.1016/s0140-6736(97)11096-0"],
+        )
+
 
 class TitleMatchingTests(unittest.TestCase):
     def test_identical_and_case_punct_variants_score_one(self) -> None:
@@ -163,6 +173,31 @@ class MetadataComparisonTests(unittest.TestCase):
         )
         self.assertEqual(reasons, [])
 
+    def test_initials_first_and_vancouver_authors_are_parsed(self) -> None:
+        resolved = {
+            "title": "A Paper", "year": 2021,
+            "author": [{"family": "Jumper"}],
+        }
+        for stated in ("J. Jumper, R. Evans", "Jumper J, Evans R"):
+            with self.subTest(stated=stated):
+                self.assertEqual(
+                    _common.compare_metadata(
+                        {"title": "A Paper", "year": 2021, "authors": stated},
+                        resolved,
+                    ),
+                    [],
+                )
+
+    def test_lone_initial_is_not_treated_as_an_author_mismatch(self) -> None:
+        self.assertEqual(
+            _common.compare_metadata(
+                {"title": "A Paper", "year": 2021, "authors": "J."},
+                {"title": "A Paper", "year": 2021,
+                 "author": [{"family": "Jumper"}]},
+            ),
+            [],
+        )
+
 
 class BibTeXParsingTests(unittest.TestCase):
     def test_fixture_entries_parse_with_identifiers(self) -> None:
@@ -187,6 +222,12 @@ class BibTeXParsingTests(unittest.TestCase):
         entries = parse_references.parse_bibtex(text)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["doi"], "10.1000/xyz123")
+
+    def test_nested_braces_and_unquoted_values_are_parsed(self) -> None:
+        text = "@article{x, title = {Foo {Bar}, baz}, year = 2021, doi = {10.1000/x}}"
+        entry = parse_references.parse_bibtex(text)[0]
+        self.assertEqual(entry["title"], "Foo {Bar}, baz")
+        self.assertEqual(entry["year"], "2021")
 
 
 class MarkdownParsingTests(unittest.TestCase):
@@ -396,6 +437,26 @@ class ReportRenderingTests(unittest.TestCase):
 
 
 class RetractionSweepTests(unittest.TestCase):
+    def test_unknown_doi_is_not_found_when_both_providers_return_404(self) -> None:
+        original_crossref = check_retractions._crossref_retraction
+        original_openalex = check_retractions._openalex_retraction
+        try:
+            check_retractions._crossref_retraction = (
+                lambda doi: (_ for _ in ()).throw(
+                    RuntimeError("HTTP 404 from Crossref")
+                )
+            )
+            check_retractions._openalex_retraction = (
+                lambda doi: (_ for _ in ()).throw(
+                    RuntimeError("HTTP 404 from OpenAlex")
+                )
+            )
+            result = check_retractions.check_doi("10.5555/unknown")
+        finally:
+            check_retractions._crossref_retraction = original_crossref
+            check_retractions._openalex_retraction = original_openalex
+        self.assertEqual(result["verdict"], check_retractions.NOT_FOUND)
+
     def test_dois_are_collected_from_json_and_text(self) -> None:
         payload = FIXTURES.parent / "retraction_input.json"
         payload.write_text(json.dumps({"references": [

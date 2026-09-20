@@ -37,6 +37,7 @@ OPENALEX_WORKS = "https://api.openalex.org/works"
 
 RETRACTED = "retracted"
 CLEAR = "clear"
+NOT_FOUND = "not-found"
 UNRESOLVED = "unresolved"
 
 
@@ -72,11 +73,16 @@ def check_doi(doi: str) -> Dict:
     """Check one DOI against Crossref, then OpenAlex as a fallback."""
     result: Dict = {"doi": doi, "verdict": CLEAR, "detail": None}
     errors: List[str] = []
+    not_found = 0
     for checker in (_crossref_retraction, _openalex_retraction):
         try:
             finding = checker(doi)
         except RuntimeError as error:
-            errors.append(str(error))
+            message = str(error)
+            if "HTTP 404" in message:
+                not_found += 1
+            else:
+                errors.append(message)
             continue
         if finding:
             result["verdict"] = RETRACTED
@@ -88,8 +94,12 @@ def check_doi(doi: str) -> Dict:
         # provider if this one could not decide (e.g. DOI unknown there).
         result["checked_by"] = checker.__name__.replace("_retraction", "")
         return result
-    result["verdict"] = UNRESOLVED
-    result["detail"] = "; ".join(errors) or "no provider answered"
+    if not errors and not_found:
+        result["verdict"] = NOT_FOUND
+        result["detail"] = "no provider found this DOI"
+    else:
+        result["verdict"] = UNRESOLVED
+        result["detail"] = "; ".join(errors) or "no provider answered"
     return result
 
 
@@ -109,7 +119,7 @@ def collect_dois(inputs: List[str], doi_flags: List[str]) -> List[str]:
                     seen.add(doi)
                     dois.append(doi)
         else:
-            for match in re.finditer(r"10\.\d{4,9}/[^\s\"'<>|,;)\]}]+", text):
+            for match in re.finditer(r"10\.\d{4,9}/[^\s\"'<>|,;}\]]+", text):
                 doi = normalize_doi(match.group(0))
                 if doi and doi not in seen:
                     seen.add(doi)

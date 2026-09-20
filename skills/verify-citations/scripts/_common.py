@@ -218,7 +218,7 @@ def extract_year(*texts: Optional[str]) -> Optional[int]:
     for text in texts:
         if not text:
             continue
-        for match in re.finditer(r"\b(1[5-9]\d{2}|20\d{2})\b", text):
+        for match in re.finditer(r"\b(1[5-9]\d{2}|20\d{2})\b", str(text)):
             year = int(match.group(1))
             if year <= current:
                 return year
@@ -226,17 +226,29 @@ def extract_year(*texts: Optional[str]) -> Optional[int]:
 
 
 def _first_surname(author_field: Optional[str]) -> Optional[str]:
-    """Return the first author's surname from common citation formats."""
+    """Return the first author's surname from common citation formats.
+
+    Accepts APA-style Surname, Given as well as initials-first and
+    Vancouver-style Surname J forms. A lone initial is ambiguous and is
+    deliberately treated as unknown rather than producing a false mismatch.
+    """
     if not author_field:
         return None
-    first = re.split(r";|\band\b|&|,", author_field)[0].strip()
+    first = re.split(
+        r";|\band\b|&|,", author_field, maxsplit=1, flags=re.IGNORECASE
+    )[0].strip()
     if not first:
         return None
-    # "Jumper, John" -> Jumper ; "John Jumper" -> Jumper
-    if "," in first:
-        return normalize_title(first.split(",")[0])
     parts = first.split()
-    return normalize_title(parts[-1]) if parts else None
+    # Vancouver: "Jumper J"; initials-first: "J. Jumper"; natural order:
+    # "John Jumper". A final one-letter token is an initial, not a surname.
+    candidate = (
+        parts[0]
+        if len(parts) > 1 and len(parts[-1].rstrip(".")) == 1
+        else parts[-1]
+    )
+    normalized = normalize_title(candidate)
+    return normalized if len(normalized) > 1 else None
 
 
 def _resolved_surname(message: Dict) -> Optional[str]:
@@ -247,7 +259,7 @@ def _resolved_surname(message: Dict) -> Optional[str]:
         raw = author.get("raw_author_name") if not name else None
         candidate = name or raw
         if candidate:
-            return normalize_title(candidate.split(",")[0])
+            return _first_surname(str(candidate))
     return None
 
 
