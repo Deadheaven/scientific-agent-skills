@@ -17,7 +17,7 @@ The scripts read these (or `VERIFY_CITATIONS_EMAIL`) and append
 ## Crossref
 
 - Resolve by DOI: `GET https://api.crossref.org/works/{doi}`
-- Bibliographic search: `GET https://api.crossref.org/works?query.bibliographic=<title>&rows=3&select=title,author,issued,container-title,DOI,type`
+- Bibliographic search: `GET https://api.crossref.org/works?query.bibliographic=<title>&rows=3&select=title,author,issued,container-title,DOI,type,update-to,updated-by`
 - Retraction metadata: the work message's `update-to` / `updated-by` arrays
   carry `{type, DOI}` pointing at the retraction notice; `type` containing
   `retract` or `withdraw` triggers the `retracted` verdict.
@@ -28,7 +28,7 @@ The scripts read these (or `VERIFY_CITATIONS_EMAIL`) and append
 
 ## arXiv
 
-- Atom API: `GET http://export.arxiv.org/api/query?id_list=<id>&max_results=1`
+- Atom API: `GET https://export.arxiv.org/api/query?id_list=<id>&max_results=1`
 - Accepts new-format (`2401.12345`, optional `v2`) and old-format
   (`cs/0112017`) identifiers.
 - Response is XML (namespaced Atom); titles/authors/published year are read

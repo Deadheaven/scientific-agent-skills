@@ -31,8 +31,12 @@ A single entry receives exactly one verdict, chosen in this order:
   `compare_metadata(..., title_threshold=...)`.
 - **Year tolerance: 1** -- catches the common off-by-one (online vs print
   year) without silently accepting wrong decades.
-- **First-author surname**: compared on the normalized surname only; initial
-  differences and name-order variants do not trigger mismatches.
+- **First-author surname**: compared on the normalized surname only. APA-style
+  `Surname, Given` and Vancouver-style `Surname Initial` are compared; when an
+  initials-first citation begins with a lone initial (for example,
+  `J. Jumper`), author comparison is skipped rather than treating that initial
+  as a surname. This conservative parser can therefore miss an author
+  mismatch; inspect the source record when author identity matters.
 
 ## False-positive and false-negative profile
 

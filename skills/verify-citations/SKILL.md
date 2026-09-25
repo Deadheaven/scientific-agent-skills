@@ -1,6 +1,6 @@
 ---
 name: verify-citations
-description: Audit the references of a scientific manuscript against live bibliographic databases before submission or review. Detects hallucinated references that resolve nowhere, flags retracted or withdrawn papers via Crossref and OpenAlex, catches metadata mismatches (wrong year, wrong authors, garbled titles) that signal LLM-mangled citations, and renders a per-citation markdown audit report with a shared verdict taxonomy. This skill should be used when fact-checking a manuscript's bibliography, checking citations for retraction, auditing AI-generated references, or preparing a camera-ready reference list.
+description: Run a pre-submission audit of scientific references against live bibliographic databases. Find hallucinated citations, identify retracted or withdrawn papers through Crossref and OpenAlex, and flag mismatched authors, years, or titles in AI-generated references. Use when auditing a manuscript bibliography before submission or review, checking references for retractions, or investigating fabricated citations.
 allowed-tools: Read Write Edit Bash WebFetch
 license: MIT License
 compatibility: Python 3.9+. Network access needed for api.crossref.org, export.arxiv.org, eutils.ncbi.nlm.nih.gov, and api.openalex.org (all keyless; CROSSREF_EMAIL/OPENALEX_EMAIL enable polite pools). Report generation is offline.
