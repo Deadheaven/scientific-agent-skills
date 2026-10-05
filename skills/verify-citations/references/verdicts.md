@@ -11,7 +11,7 @@ filters, and downstream tooling can switch on them directly.
 | `metadata-mismatch` | verify_references | The entry resolved to a real work, but stated details disagree with the canonical record. | Read the mismatch reasons; fix the manuscript or confirm the intended source. |
 | `retracted` | verify_references, check_retractions | Crossref `update-to`/`updated-by` or OpenAlex `is_retracted` marks the work as retracted/withdrawn. | Remove the citation; cite the retraction notice if the fact of retraction matters. |
 | `not-found` | verify_references | The entry carried a checkable identifier or title, and every provider returned no record above the match threshold. | Hand-verify. For mainstream-looking papers this is the strongest hallucination signal; for theses/datasets/grey literature it can be a false negative of the providers. |
-| `unresolved` | both | A network or API error (HTTP status, timeout) prevented checking. | Retry later; `--pause` up if rate-limited. |
+| `unresolved` | both | A network or API error prevented checking, or title search could not distinguish equally ranked works. | Retry later; increase `--pause` if rate-limited, or add a DOI, author, or year to disambiguate. |
 | `skipped` | verify_references | The entry had no DOI/arXiv/PMID and its title was too short/absent to search. | Add an identifier, or check manually (books, websites, software). |
 
 ## Precedence

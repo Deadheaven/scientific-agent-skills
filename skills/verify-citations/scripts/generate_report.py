@@ -48,7 +48,10 @@ _VERDICT_EXPLANATION = {
     "check the paper is the one you meant to cite",
     RETRACTED: "the work has been retracted or withdrawn -- remove it",
     NOT_FOUND: "no provider knows this work -- a prime hallucination suspect",
-    UNRESOLVED: "network or API error prevented checking -- retry later",
+    UNRESOLVED: (
+        "network/API error or ambiguous match prevented verification -- "
+        "retry or add citation details"
+    ),
     SKIPPED: "nothing to check (no identifier and no title)",
 }
 

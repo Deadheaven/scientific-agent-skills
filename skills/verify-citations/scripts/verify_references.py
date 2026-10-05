@@ -34,7 +34,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -45,10 +45,13 @@ from _common import (  # noqa: E402
     SKIPPED,
     UNRESOLVED,
     VERIFIED,
+    _first_surname,
+    _resolved_surname,
     compare_metadata,
     contact_email,
     extract_year,
     fetch_json,
+    fetch_response,
     title_similarity,
 )
 
@@ -132,19 +135,15 @@ def _search_crossref(title: str) -> List[Dict]:
 
 def _fetch_arxiv(arxiv_id: str) -> Optional[Dict]:
     """Fetch an arXiv record; the Atom API returns XML, parsed with stdlib ET."""
-    from _common import http_headers  # local import keeps the module importable offline
-
-    import requests
-
-    response = requests.get(
+    response = fetch_response(
         ARXIV_API,
         params={"id_list": arxiv_id, "max_results": 1},
-        headers=http_headers(),
         timeout=30,
     )
-    if response.status_code != 200:
-        raise RuntimeError(f"HTTP {response.status_code} from arXiv API")
-    root = ET.fromstring(response.text)
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError as error:
+        raise RuntimeError(f"invalid XML response from arXiv API: {error}") from error
     ns = {"atom": "http://www.w3.org/2005/Atom"}
     entry = root.find("atom:entry", ns)
     if entry is None:
@@ -194,16 +193,68 @@ def _fetch_pubmed(pmid: str) -> Optional[Dict]:
     }
 
 
-def _best_search_match(title: str) -> Optional[Dict]:
+def _candidate_rank(
+    title: str, reference: Dict, candidate: Dict
+) -> Tuple[int, int, int, float]:
+    """Prefer title matches supported by the citation's author and year."""
+    stated_author = _first_surname(reference.get("authors"))
+    resolved_author = _resolved_surname(candidate)
+    author_known = bool(stated_author and resolved_author)
+    author_matches = author_known and stated_author == resolved_author
+
+    stated_year = extract_year(str(reference.get("year") or ""))
+    resolved_year = extract_year(str(candidate.get("year") or ""))
+    year_known = bool(stated_year and resolved_year)
+    year_matches = year_known and abs(stated_year - resolved_year) <= 1
+    exact_year = year_known and stated_year == resolved_year
+
+    conflicts = int(author_known and not author_matches) + int(
+        year_known and not year_matches
+    )
+    agreements = int(author_matches) + int(year_matches)
+    similarity = title_similarity(title, candidate.get("title"))
+    return (-conflicts, agreements, int(exact_year), similarity)
+
+
+def _best_search_match(title: str, reference: Dict) -> Optional[Dict]:
     candidates = _search_crossref(title)
-    best, best_score = None, 0.0
-    for candidate in candidates:
-        score = title_similarity(title, candidate.get("title"))
-        if score > best_score:
-            best, best_score = candidate, score
-    if best is None or best_score < MATCH_THRESHOLD:
+    ranked = [
+        (_candidate_rank(title, reference, candidate), index, candidate)
+        for index, candidate in enumerate(candidates)
+        if title_similarity(title, candidate.get("title")) >= MATCH_THRESHOLD
+    ]
+    if not ranked:
         return None
-    return best
+
+    best_rank = max(rank for rank, _, _ in ranked)
+    tied = [
+        (index, candidate)
+        for rank, index, candidate in ranked
+        if rank == best_rank
+    ]
+
+    # Multiple Crossref records for one DOI are the same work. Keep any
+    # retraction evidence carried by a duplicate record.
+    unique: Dict[str, Dict] = {}
+    for index, candidate in tied:
+        doi = candidate.get("doi")
+        key = doi.casefold() if doi else f"<missing-doi:{index}>"
+        if key not in unique:
+            unique[key] = candidate
+        elif candidate.get("_retraction") and not unique[key].get("_retraction"):
+            unique[key]["_retraction"] = candidate["_retraction"]
+
+    if len(unique) > 1:
+        identifiers = sorted(
+            candidate.get("doi") or "DOI unavailable"
+            for candidate in unique.values()
+        )
+        candidates_text = ", ".join(identifiers)
+        raise RuntimeError(
+            "ambiguous Crossref title match; equally ranked candidates: "
+            f"{candidates_text}. Provide a DOI or more author/year details."
+        )
+    return next(iter(unique.values()))
 
 
 def resolve_reference(reference: Dict) -> Dict:
@@ -235,7 +286,7 @@ def resolve_reference(reference: Dict) -> Dict:
             resolved = _fetch_pubmed(pmid)
             matched_via = f"pubmed:{pmid}" if resolved else None
         if resolved is None and title and len(title.split()) >= 4:
-            resolved = _best_search_match(title)
+            resolved = _best_search_match(title, reference)
             matched_via = "crossref:search" if resolved else None
     except RuntimeError as error:
         result["verdict"] = UNRESOLVED

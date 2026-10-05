@@ -1,12 +1,8 @@
 """Tests for the verify-citations skill.
 
-The network-facing half (Crossref/arXiv/PubMed/OpenAlex) cannot run in CI;
-the value of the skill, though, is concentrated in the pure half this suite
-drives: extracting references from real manuscripts without losing or
-merging entries, normalising identifiers so lookups do not silently miss,
-scoring title matches so a subtitle does not split a citation in two, and
-rendering verdicts a human can act on. Network paths are exercised only as
-far as argument validation and the no-identifier skip verdict.
+Live provider access is not used in CI. The suite covers parsing, matching,
+and reports offline, with mocked provider responses for the HTTP error and
+candidate-selection paths.
 """
 
 from __future__ import annotations
@@ -15,6 +11,8 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import skill_contract
 
@@ -102,6 +100,12 @@ class TitleMatchingTests(unittest.TestCase):
         self.assertEqual(_common.title_similarity(base, base), 1.0)
         self.assertEqual(
             _common.title_similarity(base, "attention  is all you  need!"), 1.0
+        )
+
+    def test_retracted_status_prefix_is_ignored_for_title_matching(self) -> None:
+        title = "Ileal-lymphoid nodular hyperplasia in children"
+        self.assertEqual(
+            _common.title_similarity(title, f"RETRACTED: {title}"), 1.0
         )
 
     def test_latex_and_math_are_folded_before_comparison(self) -> None:
@@ -306,16 +310,16 @@ class VerdictLogicTests(unittest.TestCase):
 
     def test_dead_doi_is_retained_when_title_fallback_resolves(self) -> None:
         original_fetch = verify_references._fetch_by_doi
-        original_search = verify_references._best_search_match
+        original_search = verify_references._search_crossref
         original_pause = verify_references.REQUEST_PAUSE
         try:
             verify_references._fetch_by_doi = lambda doi: None
-            verify_references._best_search_match = lambda title: {
+            verify_references._search_crossref = lambda title: [{
                 "title": title,
                 "year": 2021,
                 "author": [{"family": "Roe"}],
                 "type": "journal-article",
-            }
+            }]
             verify_references.REQUEST_PAUSE = 0
             result = verify_references.resolve_reference({
                 "key": "1", "doi": "10.1080/24733938.2025.1234567",
@@ -323,7 +327,7 @@ class VerdictLogicTests(unittest.TestCase):
             })
         finally:
             verify_references._fetch_by_doi = original_fetch
-            verify_references._best_search_match = original_search
+            verify_references._search_crossref = original_search
             verify_references.REQUEST_PAUSE = original_pause
         self.assertEqual(result["verdict"], _common.METADATA_MISMATCH)
         self.assertTrue(any("DOI not found" in reason for reason in result["mismatch_reasons"]))
@@ -353,25 +357,162 @@ class VerdictLogicTests(unittest.TestCase):
         assert records[0]["_retraction"] == "updated-by: retraction (10.5555/notice)"
 
     def test_search_retraction_is_preserved(self) -> None:
-        original_search = verify_references._best_search_match
+        original_search = verify_references._search_crossref
         original_pause = verify_references.REQUEST_PAUSE
         try:
-            verify_references._best_search_match = lambda title: {
+            verify_references._search_crossref = lambda title: [{
                 "title": title,
                 "year": 2021,
                 "author": [{"family": "Roe"}],
                 "type": "journal-article",
                 "_retraction": "updated-by: retraction (10.5555/notice)",
-            }
+            }]
             verify_references.REQUEST_PAUSE = 0
             result = verify_references.resolve_reference({
                 "key": "1", "title": "A Real Scientific Paper", "year": "2021", "authors": "Roe, J.",
             })
         finally:
-            verify_references._best_search_match = original_search
+            verify_references._search_crossref = original_search
             verify_references.REQUEST_PAUSE = original_pause
         self.assertEqual(result["verdict"], _common.RETRACTED)
         self.assertIn("retraction", result["retraction_detail"])
+
+    def test_title_search_uses_author_and_year_to_select_retracted_original(self) -> None:
+        title = (
+            "Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and "
+            "pervasive developmental disorder in children"
+        )
+        notice_doi = "10.1016/s0140-6736(10)60175-4"
+        original_doi = "10.1016/s0140-6736(97)11096-0"
+        letter_doi = "10.1016/s0140-6736(05)77837-5"
+        items = [
+            {
+                "title": [f"Retraction—{title}"], "type": "journal-article",
+                "DOI": notice_doi,
+                "author": [{"family": "The Editors of The Lancet"}],
+                "issued": {"date-parts": [[2010, 2]]},
+                "update-to": [{"type": "retraction", "DOI": original_doi}],
+            },
+            {
+                "title": [title], "type": "journal-article", "DOI": letter_doi,
+                "author": [{"family": "Sabra"}],
+                "issued": {"date-parts": [[1998, 7]]},
+            },
+            {
+                "title": [f"RETRACTED: {title}"], "type": "journal-article",
+                "DOI": original_doi,
+                "author": [{"family": "Wakefield"}],
+                "issued": {"date-parts": [[1998, 2]]},
+                "updated-by": [{"type": "retraction", "DOI": notice_doi}],
+            },
+        ]
+        original_pause = verify_references.REQUEST_PAUSE
+        try:
+            verify_references.REQUEST_PAUSE = 0
+            for ordered_items in (items, list(reversed(items))):
+                with self.subTest(order=[item["DOI"] for item in ordered_items]):
+                    with patch.object(
+                        verify_references, "fetch_json",
+                        return_value={"message": {"items": ordered_items}},
+                    ):
+                        result = verify_references.resolve_reference({
+                            "key": "wakefield", "title": title, "year": "1998",
+                            "authors": "Wakefield, A. J.",
+                        })
+                    self.assertEqual(result["verdict"], _common.RETRACTED)
+                    self.assertEqual(result["resolved"]["doi"], original_doi)
+        finally:
+            verify_references.REQUEST_PAUSE = original_pause
+
+    def test_title_search_returns_unresolved_when_shared_title_is_ambiguous(self) -> None:
+        title = (
+            "Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and "
+            "pervasive developmental disorder in children"
+        )
+        items = [
+            {
+                "title": [title], "type": "journal-article",
+                "DOI": "10.1016/s0140-6736(05)77837-5",
+                "author": [{"family": "Sabra"}],
+                "issued": {"date-parts": [[1998, 7]]},
+            },
+            {
+                "title": [f"RETRACTED: {title}"], "type": "journal-article",
+                "DOI": "10.1016/s0140-6736(97)11096-0",
+                "author": [{"family": "Wakefield"}],
+                "issued": {"date-parts": [[1998, 2]]},
+                "updated-by": [{"type": "retraction", "DOI": "10.5555/notice"}],
+            },
+        ]
+        original_pause = verify_references.REQUEST_PAUSE
+        try:
+            verify_references.REQUEST_PAUSE = 0
+            with patch.object(
+                verify_references, "fetch_json",
+                return_value={"message": {"items": items}},
+            ):
+                result = verify_references.resolve_reference({"key": "ambiguous", "title": title})
+        finally:
+            verify_references.REQUEST_PAUSE = original_pause
+        self.assertEqual(result["verdict"], _common.UNRESOLVED)
+        self.assertIn("ambiguous Crossref title match", result["detail"])
+        self.assertIn("10.1016/s0140-6736(05)77837-5", result["detail"])
+        self.assertIn("10.1016/s0140-6736(97)11096-0", result["detail"])
+
+    def test_timeout_is_unresolved_and_later_references_are_kept(self) -> None:
+        successful_response = Mock(status_code=200)
+        successful_response.json.return_value = {
+            "message": {
+                "title": ["A Successful Paper"],
+                "issued": {"date-parts": [[2021]]},
+                "author": [{"family": "Roe"}],
+                "DOI": "10.5555/success",
+            }
+        }
+        original_pause = verify_references.REQUEST_PAUSE
+        try:
+            verify_references.REQUEST_PAUSE = 0
+            with patch.object(
+                _common.requests, "get",
+                side_effect=[_common.requests.exceptions.Timeout("timed out"), successful_response],
+            ) as get:
+                results = verify_references.verify_all([
+                    {"key": "timeout", "doi": "10.5555/timeout"},
+                    {"key": "success", "doi": "10.5555/success",
+                     "title": "A Successful Paper", "year": "2021", "authors": "Roe, J."},
+                ])
+        finally:
+            verify_references.REQUEST_PAUSE = original_pause
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual([item["verdict"] for item in results], [
+            _common.UNRESOLVED, _common.VERIFIED,
+        ])
+        report = generate_report.render_report(results)
+        self.assertIn("timeout", report)
+        self.assertIn("A Successful Paper", report)
+
+    def test_connection_failure_is_normalized(self) -> None:
+        with patch.object(
+            _common.requests, "get",
+            side_effect=_common.requests.exceptions.ConnectionError("offline"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request failed"):
+                _common.fetch_json("https://api.crossref.org/works")
+
+    def test_invalid_json_is_normalized(self) -> None:
+        response = Mock(status_code=200)
+        response.json.side_effect = ValueError("invalid JSON")
+        with patch.object(_common.requests, "get", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON response"):
+                _common.fetch_json("https://api.crossref.org/works")
+
+    def test_malformed_arxiv_xml_is_normalized(self) -> None:
+        with patch.object(
+            verify_references, "fetch_response",
+            return_value=SimpleNamespace(text="<feed><entry>"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invalid XML response"):
+                verify_references._fetch_arxiv("2401.12345")
 
     def test_taxonomy_constants_are_shared(self) -> None:
         # The report renderer and the verifier must agree on verdict strings.

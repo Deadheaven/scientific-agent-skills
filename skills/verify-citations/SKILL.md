@@ -5,7 +5,7 @@ allowed-tools: Read Write Edit Bash WebFetch
 license: MIT License
 compatibility: Python 3.9+. Network access needed for api.crossref.org, export.arxiv.org, eutils.ncbi.nlm.nih.gov, and api.openalex.org (all keyless; CROSSREF_EMAIL/OPENALEX_EMAIL enable polite pools). Report generation is offline.
 metadata:
-  version: "1.0"
+  version: "1.1"
   skill-author: Prajwal Rawoorkar
 ---
 
@@ -61,7 +61,9 @@ python scripts/verify_references.py refs.json --output verification.json
 
 Resolution order per entry: DOI -> Crossref, arXiv ID -> arXiv Atom API, PMID
 -> PubMed E-utilities, then Crossref bibliographic search for title-only
-entries (best title similarity wins, threshold 0.85). Set
+entries (author and year guide selection among title matches; similarity
+threshold 0.85). Equally ranked works are reported as `unresolved` rather than
+chosen by provider order. Set
 `CROSSREF_EMAIL`/`OPENALEX_EMAIL` to join provider polite pools.
 
 Verdicts (shared taxonomy, see `references/verdicts.md`):
@@ -72,7 +74,7 @@ Verdicts (shared taxonomy, see `references/verdicts.md`):
 | `metadata-mismatch` | resolved, but stated details disagree -- wrong year, wrong first author, or a garbled title |
 | `retracted` | the work has been retracted or withdrawn |
 | `not-found` | no provider knows the work -- prime hallucination suspect |
-| `unresolved` | network/API error prevented checking |
+| `unresolved` | network/API error prevented checking, or title search could not distinguish equally ranked works |
 | `skipped` | nothing checkable (no identifier, no title) |
 
 The retraction check runs inside this pass when Crossref supplies

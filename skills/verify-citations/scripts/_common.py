@@ -13,7 +13,7 @@ generate_report.py -- the report renderer switches on these exact strings):
     metadata-mismatch the reference resolved but stated details disagree
     retracted         the resolved work has been retracted or withdrawn
     not-found         no record anywhere despite searching every provider
-    unresolved        a network or API error prevented checking
+    unresolved        a network/API error or ambiguous match prevented checking
     skipped           the entry carried no usable identifier or title
 """
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:  # pragma: no cover - exercised only without requests
     import requests
@@ -68,14 +68,32 @@ def http_headers() -> Dict[str, str]:
     return headers
 
 
-def fetch_json(url: str, params: Optional[Dict] = None, timeout: int = 30) -> Dict:
-    """GET a JSON API response, raising RuntimeError with the status code."""
+def fetch_response(
+    url: str, params: Optional[Dict] = None, timeout: int = 30
+) -> Any:
+    """GET a successful HTTP response, normalizing transport errors."""
     if requests is None:
-        raise RuntimeError("the 'requests' package is required for network verification")
-    response = requests.get(url, params=params or {}, headers=http_headers(), timeout=timeout)
+        raise RuntimeError(
+            "the 'requests' package is required for network verification"
+        )
+    try:
+        response = requests.get(
+            url, params=params or {}, headers=http_headers(), timeout=timeout
+        )
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(f"request failed for {url}: {error}") from error
     if response.status_code != 200:
         raise RuntimeError(f"HTTP {response.status_code} from {url}")
-    return response.json()
+    return response
+
+
+def fetch_json(url: str, params: Optional[Dict] = None, timeout: int = 30) -> Dict:
+    """GET and decode JSON, raising RuntimeError for transport or body errors."""
+    response = fetch_response(url, params=params, timeout=timeout)
+    try:
+        return response.json()
+    except ValueError as error:
+        raise RuntimeError(f"invalid JSON response from {url}: {error}") from error
 
 
 # --------------------------------------------------------------------------
@@ -179,7 +197,9 @@ def title_similarity(a: Optional[str], b: Optional[str]) -> float:
     of full-string and token-set comparison so subtitles do not dilute a
     match.
     """
-    left, right = normalize_title(a), normalize_title(b)
+    left, right = normalize_title(_without_retraction_label(a)), normalize_title(
+        _without_retraction_label(b)
+    )
     if not left or not right:
         return 0.0
     if left == right:
@@ -202,6 +222,16 @@ def title_similarity(a: Optional[str], b: Optional[str]) -> float:
             return min(dice, 0.84)
         return max(dice, 0.85 + 0.15 * containment)
     return dice
+
+
+_RETRACTION_TITLE_LABEL = re.compile(r"^\s*(?:retracted|withdrawn)\s*:\s*", re.I)
+
+
+def _without_retraction_label(title: Optional[str]) -> Optional[str]:
+    """Remove a leading status label for matching, preserving the source title."""
+    if not title:
+        return title
+    return _RETRACTION_TITLE_LABEL.sub("", title, count=1)
 
 
 # --------------------------------------------------------------------------
